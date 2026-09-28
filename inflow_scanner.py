@@ -1,33 +1,52 @@
-import pandas as pd
-import yfinance as yf
 import datetime
 import warnings
+import pandas as pd
+import yfinance as yf
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
+
+def get_nifty500_tickers():
+    """NSE ನಿಂದ Nifty 500 ಶೇರುಗಳ ಲೈವ್ ಪಟ್ಟಿಯನ್ನು ಫೆಚ್ ಮಾಡುತ್ತದೆ"""
+    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    try:
+        df = pd.read_csv(
+            url,
+            storage_options={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        )
+        tickers = [f"{symbol}.NS" for symbol in df["Symbol"].dropna()]
+        print(f"✅ Nifty 500 ಪಟ್ಟಿಯಿಂದ ಒಟ್ಟು {len(tickers)} ಶೇರುಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗಿದೆ.\n")
+        return tickers
+    except Exception as e:
+        print(f"⚠️ Nifty 500 ಲಿಸ್ಟ್ ಸಿಗಲಿಲ್ಲ ({e}). ಡೀಫಾಲ್ಟ್ ಬ್ಯಾಕಪ್ ಲಿಸ್ಟ್ ಬಳಸಲಾಗುತ್ತಿದೆ...")
+        return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TATAMOTORS.NS"]
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(window=period).mean()
-    avg_loss = -loss.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def run_inflow_scanner(capital_per_trade=30000.0):
-    # Demo/Core Tickers (Fast scanning gagi, Nifty 500 list kooda add madabahudu)
-    tickers = [
-        "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-        "TATAMOTORS.NS", "BHARTIARTL.NS", "SBIN.NS", "ITC.NS", "LT.NS"
-    ]
-    
-    sl_pct = 0.03       # -3.0% Stop Loss
-    target_pct = 0.045  # +4.5% Target
+def run_inflow_scanner_v2():
+    capital_per_trade = 30000.0  # ₹30,000 Capital
+    sl_pct = 0.03                # -3.0% Stop Loss
+    target_pct = 0.045           # +4.5% Target
+
+    tickers = get_nifty500_tickers()
+
+    print("==========================================================================")
+    print("   INFLOW SCANNER: NIFTY 500 LIVE MARKET SCANNER")
+    print(f"   Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("==========================================================================")
+    print("ನಿರೀಕ್ಷಿಸಿ... 500 ಶೇರುಗಳ ಲೈವ್ ಡೇಟಾವನ್ನು ಸ್ಕ್ಯಾನ್ ಮಾಡಲಾಗುತ್ತಿದೆ...\n")
 
     try:
-        data = yf.download(tickers, period="1y", interval="1d", group_by="ticker", progress=False)
+        data = yf.download(tickers, period="1y", interval="1d", group_by="ticker", progress=True)
     except Exception as e:
-        return {"status": "error", "message": str(e), "data": []}
+        print(f"❌ ಡೇಟಾ ಡೌನ್‌ಲೋಡ್ ಫೇಲ್ ಆಗಿದೆ: {e}")
+        return
 
     matches = []
 
@@ -65,21 +84,29 @@ def run_inflow_scanner(capital_per_trade=30000.0):
                 qty = int(capital_per_trade // buy_price)
 
                 if qty >= 1:
+                    actual_inv = qty * buy_price
                     matches.append({
-                        "stock": ticker.replace(".NS", ""),
-                        "buyPrice": round(buy_price, 2),
-                        "stopLoss": round(sl_price, 2),
-                        "target": round(target_price, 2),
-                        "qty": qty,
-                        "rsi": round(float(curr["RSI_14"]), 1),
-                        "investment": round(qty * buy_price, 2)
+                        "Stock": ticker.replace(".NS", ""),
+                        "Buy Price (₹)": round(buy_price, 2),
+                        "StopLoss (₹)": round(sl_price, 2),
+                        "Target (₹)": round(target_price, 2),
+                        "Qty": qty,
+                        "RSI": round(float(curr["RSI_14"]), 1),
+                        "Investment (₹)": round(actual_inv, 2),
+                        "Max Risk (₹)": round(actual_inv * sl_pct, 2),
+                        "Target Profit (₹)": round(actual_inv * target_pct, 2),
                     })
         except Exception:
             continue
 
-    return {
-        "status": "success",
-        "scanTime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "totalMatches": len(matches),
-        "data": matches
-    }
+    print("\n==========================================================================")
+    if matches:
+        res_df = pd.DataFrame(matches)
+        print(f"🎯 ಒಟ್ಟು {len(res_df)} ಉತ್ತಮ ಶೇರುಗಳು ನಿಮ್ಮ ನಿಯಮಗಳಿಗೆ ಹೊಂದಿಕೆಯಾಗಿವೆ:\n")
+        display(res_df)  # Google Colab ನಲ್ಲಿ Table ಸುಂದರವಾಗಿ ಕಾಣಲು
+    else:
+        print("❌ ಇವತ್ತು Nifty 500 ನ ಯಾವುದೇ ಶೇರು ನಿಮ್ಮ 5 ಎಂಟ್ರಿ ನಿಯಮಗಳನ್ನು ಪೂರೈಸಿಲ್ಲ.")
+    print("==========================================================================")
+
+# Execute Scanner
+run_inflow_scanner_v2()
