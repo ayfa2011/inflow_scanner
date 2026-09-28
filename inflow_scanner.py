@@ -1,112 +1,198 @@
-import datetime
-import warnings
+"""
+Inflow Nifty 500 Scanner module.
+Compatible with main.py: from inflow_scanner import run_inflow_scanner
+Daily yfinance data is historical daily OHLCV, not guaranteed intraday real-time.
+"""
+import datetime as dt
+import logging
+import math
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import yfinance as yf
 
-warnings.filterwarnings("ignore")
+logger = logging.getLogger("inflow_scanner")
+NSE_CSV = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+BACKUP_TICKERS = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS",
+                  "ICICIBANK.NS", "TATAMOTORS.NS", "BHARTIARTL.NS",
+                  "SBIN.NS", "ITC.NS", "LT.NS"]
+SL_PCT = 0.03
+TARGET_PCT = 0.045
+
+
+def _now_ist():
+    return dt.datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S")
+
 
 def get_nifty500_tickers():
-    """NSE ನಿಂದ Nifty 500 ಶೇರುಗಳ ಲೈವ್ ಪಟ್ಟಿಯನ್ನು ಫೆಚ್ ಮಾಡುತ್ತದೆ"""
-    url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+    """Return current NSE Nifty 500 tickers and a source/status message."""
     try:
-        df = pd.read_csv(
-            url,
-            storage_options={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        table = pd.read_csv(
+            NSE_CSV,
+            storage_options={"User-Agent": "Mozilla/5.0 (compatible; InflowScanner/1.0)"}
         )
-        tickers = [f"{symbol}.NS" for symbol in df["Symbol"].dropna()]
-        print(f"✅ Nifty 500 ಪಟ್ಟಿಯಿಂದ ಒಟ್ಟು {len(tickers)} ಶೇರುಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗಿದೆ.\n")
-        return tickers
-    except Exception as e:
-        print(f"⚠️ Nifty 500 ಲಿಸ್ಟ್ ಸಿಗಲಿಲ್ಲ ({e}). ಡೀಫಾಲ್ಟ್ ಬ್ಯಾಕಪ್ ಲಿಸ್ಟ್ ಬಳಸಲಾಗುತ್ತಿದೆ...")
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS", "TATAMOTORS.NS"]
+        if "Symbol" not in table.columns:
+            raise ValueError("NSE CSV missing Symbol column")
+        symbols = table["Symbol"].dropna().astype(str).str.strip()
+        symbols = symbols[symbols.ne("")].drop_duplicates().tolist()
+        if not symbols:
+            raise ValueError("NSE CSV contained no symbols")
+        return [s + ".NS" for s in symbols], "NSE Nifty 500 CSV"
+    except Exception as exc:
+        logger.exception("NSE constituents fetch failed; using backup list")
+        return BACKUP_TICKERS.copy(), "Backup ticker list; NSE error: " + str(exc)[:200]
+
 
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    avg_gain = gain.rolling(period, min_periods=period).mean()
+    avg_loss = loss.rolling(period, min_periods=period).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
+    result = 100 - (100 / (1 + rs))
+    result = result.mask((avg_loss == 0) & (avg_gain > 0), 100)
+    return result.mask((avg_loss == 0) & (avg_gain == 0), 50)
 
-def run_inflow_scanner_v2():
-    capital_per_trade = 30000.0  # ₹30,000 Capital
-    sl_pct = 0.03                # -3.0% Stop Loss
-    target_pct = 0.045           # +4.5% Target
 
-    tickers = get_nifty500_tickers()
+def _ticker_frame(data, ticker):
+    """Extract ticker OHLCV regardless of yfinance MultiIndex orientation."""
+    if data is None or data.empty:
+        return pd.DataFrame()
+    if not isinstance(data.columns, pd.MultiIndex):
+        return data.copy()
+    level0 = data.columns.get_level_values(0)
+    level1 = data.columns.get_level_values(1)
+    if ticker in level0:
+        frame = data[ticker].copy()
+    elif ticker in level1:
+        frame = data.xs(ticker, axis=1, level=1).copy()
+    else:
+        return pd.DataFrame()
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+    return frame
 
-    print("==========================================================================")
-    print("   INFLOW SCANNER: NIFTY 500 LIVE MARKET SCANNER")
-    print(f"   Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("==========================================================================")
-    print("ನಿರೀಕ್ಷಿಸಿ... 500 ಶೇರುಗಳ ಲೈವ್ ಡೇಟಾವನ್ನು ಸ್ಕ್ಯಾನ್ ಮಾಡಲಾಗುತ್ತಿದೆ...\n")
+
+def run_inflow_scanner(capital_per_trade=30000.0):
+    """Scan daily candles against the five agreed entry conditions."""
+    try:
+        capital = float(capital_per_trade)
+        if not math.isfinite(capital) or capital <= 0:
+            raise ValueError()
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "Capital must be a positive number.", "data": []}
+
+    tickers, ticker_source = get_nifty500_tickers()
+    diagnostics = {
+        "tickerSource": ticker_source,
+        "tickersRequested": len(tickers),
+        "tickersWithData": 0,
+        "tickersInsufficientHistory": 0,
+        "tickersSkipped": 0,
+        "tickerErrors": [],
+        "dataInterval": "1d",
+        "rules": [
+            "Close > EMA200 OR EMA50 > EMA200",
+            "Close within 2% of EMA20 OR EMA50",
+            "Close > Open AND Close > previous Close",
+            "RSI(14) between 38 and 68",
+            "Volume >= 20-day average volume"
+        ]
+    }
 
     try:
-        data = yf.download(tickers, period="1y", interval="1d", group_by="ticker", progress=True)
-    except Exception as e:
-        print(f"❌ ಡೇಟಾ ಡೌನ್‌ಲೋಡ್ ಫೇಲ್ ಆಗಿದೆ: {e}")
-        return
+        data = yf.download(
+            tickers=tickers, period="1y", interval="1d",
+            group_by="ticker", auto_adjust=False,
+            progress=False, threads=True, timeout=25
+        )
+    except Exception as exc:
+        logger.exception("yfinance download failed")
+        return {"status": "error", "message": "Market data download failed: " + str(exc)[:250],
+                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "diagnostics": diagnostics}
+
+    if data is None or data.empty:
+        return {"status": "error",
+                "message": "Market data provider returned no data. Check Render logs/network.",
+                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "diagnostics": diagnostics}
 
     matches = []
-
     for ticker in tickers:
         try:
-            if ticker not in data or data[ticker].dropna().empty:
+            df = _ticker_frame(data, ticker)
+            if df.empty:
+                diagnostics["tickersSkipped"] += 1
+                continue
+            required = {"Open", "Close", "Volume"}
+            if not required.issubset(df.columns):
+                diagnostics["tickersSkipped"] += 1
+                if len(diagnostics["tickerErrors"]) < 30:
+                    diagnostics["tickerErrors"].append(
+                        {"ticker": ticker, "error": "Missing OHLCV columns"}
+                    )
                 continue
 
-            df = data[ticker].dropna()
+            df = df.dropna(subset=["Open", "Close", "Volume"]).copy()
             if len(df) < 200:
+                diagnostics["tickersInsufficientHistory"] += 1
+                continue
+            diagnostics["tickersWithData"] += 1
+
+            close = pd.to_numeric(df["Close"], errors="coerce")
+            volume = pd.to_numeric(df["Volume"], errors="coerce")
+            df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
+            df["EMA_50"] = close.ewm(span=50, adjust=False).mean()
+            df["EMA_200"] = close.ewm(span=200, adjust=False).mean()
+            df["RSI_14"] = calculate_rsi(close, 14)
+            df["Vol_SMA20"] = volume.rolling(20, min_periods=20).mean()
+
+            curr, prev = df.iloc[-1], df.iloc[-2]
+            keys = ["Close", "Open", "EMA_20", "EMA_50", "EMA_200", "RSI_14", "Volume", "Vol_SMA20"]
+            if any(pd.isna(curr[k]) for k in keys) or pd.isna(prev["Close"]):
+                diagnostics["tickersSkipped"] += 1
                 continue
 
-            df["EMA_20"] = df["Close"].ewm(span=20, adjust=False).mean()
-            df["EMA_50"] = df["Close"].ewm(span=50, adjust=False).mean()
-            df["EMA_200"] = df["Close"].ewm(span=200, adjust=False).mean()
-            df["RSI_14"] = calculate_rsi(df["Close"], period=14)
-            df["Vol_SMA20"] = df["Volume"].rolling(window=20).mean()
+            price = float(curr["Close"])
+            ema20, ema50, ema200 = float(curr["EMA_20"]), float(curr["EMA_50"]), float(curr["EMA_200"])
+            rsi, vol, vol_avg = float(curr["RSI_14"]), float(curr["Volume"]), float(curr["Vol_SMA20"])
+            if price <= 0 or ema20 <= 0 or ema50 <= 0:
+                diagnostics["tickersSkipped"] += 1
+                continue
 
-            curr = df.iloc[-1]
-            prev = df.iloc[-2]
-
-            # 5 Core Rules
-            c1 = (curr["Close"] > curr["EMA_200"]) or (curr["EMA_50"] > curr["EMA_200"])
-            near_ema20 = abs(curr["Close"] - curr["EMA_20"]) / curr["EMA_20"] <= 0.02
-            near_ema50 = abs(curr["Close"] - curr["EMA_50"]) / curr["EMA_50"] <= 0.02
-            c2 = near_ema20 or near_ema50
-            c3 = (curr["Close"] > curr["Open"]) and (curr["Close"] > prev["Close"])
-            c4 = 38 <= curr["RSI_14"] <= 68
-            c5 = curr["Volume"] >= curr["Vol_SMA20"]
+            c1 = price > ema200 or ema50 > ema200
+            c2 = abs(price - ema20) / ema20 <= 0.02 or abs(price - ema50) / ema50 <= 0.02
+            c3 = price > float(curr["Open"]) and price > float(prev["Close"])
+            c4 = 38 <= rsi <= 68
+            c5 = vol >= vol_avg
 
             if c1 and c2 and c3 and c4 and c5:
-                buy_price = float(curr["Close"])
-                sl_price = buy_price * (1 - sl_pct)
-                target_price = buy_price * (1 + target_pct)
-                qty = int(capital_per_trade // buy_price)
-
+                qty = int(capital // price)
                 if qty >= 1:
-                    actual_inv = qty * buy_price
+                    invested = round(qty * price, 2)
                     matches.append({
-                        "Stock": ticker.replace(".NS", ""),
-                        "Buy Price (₹)": round(buy_price, 2),
-                        "StopLoss (₹)": round(sl_price, 2),
-                        "Target (₹)": round(target_price, 2),
-                        "Qty": qty,
-                        "RSI": round(float(curr["RSI_14"]), 1),
-                        "Investment (₹)": round(actual_inv, 2),
-                        "Max Risk (₹)": round(actual_inv * sl_pct, 2),
-                        "Target Profit (₹)": round(actual_inv * target_pct, 2),
+                        "stock": ticker.removesuffix(".NS"),
+                        "buyPrice": round(price, 2),
+                        "qty": qty,
+                        "investment": invested,
+                        "stopLoss": round(price * (1 - SL_PCT), 2),
+                        "target": round(price * (1 + TARGET_PCT), 2),
+                        "rsi": round(rsi, 1),
+                        "maxRisk": round(invested * SL_PCT, 2),
+                        "targetProfit": round(invested * TARGET_PCT, 2)
                     })
-        except Exception:
-            continue
+        except Exception as exc:
+            diagnostics["tickersSkipped"] += 1
+            if len(diagnostics["tickerErrors"]) < 30:
+                diagnostics["tickerErrors"].append({"ticker": ticker, "error": str(exc)[:200]})
+            logger.exception("Error scanning ticker %s", ticker)
 
-    print("\n==========================================================================")
-    if matches:
-        res_df = pd.DataFrame(matches)
-        print(f"🎯 ಒಟ್ಟು {len(res_df)} ಉತ್ತಮ ಶೇರುಗಳು ನಿಮ್ಮ ನಿಯಮಗಳಿಗೆ ಹೊಂದಿಕೆಯಾಗಿವೆ:\n")
-        display(res_df)  # Google Colab ನಲ್ಲಿ Table ಸುಂದರವಾಗಿ ಕಾಣಲು
-    else:
-        print("❌ ಇವತ್ತು Nifty 500 ನ ಯಾವುದೇ ಶೇರು ನಿಮ್ಮ 5 ಎಂಟ್ರಿ ನಿಯಮಗಳನ್ನು ಪೂರೈಸಿಲ್ಲ.")
-    print("==========================================================================")
-
-# Execute Scanner
-run_inflow_scanner_v2()
+    return {
+        "status": "success",
+        "scanTime": _now_ist(),
+        "totalMatches": len(matches),
+        "data": matches,
+        "diagnostics": diagnostics,
+        "message": "Scan completed using daily market data." if matches else
+                   "No stocks matched all five conditions; see diagnostics for data/skipped counts."
+    }
