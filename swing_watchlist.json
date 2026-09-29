@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "description": "Swing Pick curated stock watchlist. Edit enabled/name/sector here. NSE symbols will be confirmed before the scanner uses this list.",
+  "stocks": [
+    {
+      "name": "Hitachi Energy",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Polycab India",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Cummins India",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "GE Vernova T&D",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Siemens",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "ICICI AMC",
+      "nse_symbol": null,
+      "sector": "Financial Services & Asset Management",
+      "enabled": true
+    },
+    {
+      "name": "Caplin Point Laboratories",
+      "nse_symbol": null,
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "Corona Remedies",
+      "nse_symbol": null,
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "Inox India",
+      "nse_symbol": null,
+      "sector": "Industrial Equipment & Gases",
+      "enabled": true
+    },
+    {
+      "name": "Fiem Industries",
+      "nse_symbol": null,
+      "sector": "Automobile Components",
+      "enabled": true
+    },
+    {
+      "name": "Raghav Productivity Enhancers",
+      "nse_symbol": null,
+      "sector": "Industrial Materials",
+      "enabled": true
+    },
+    {
+      "name": "Atlanta Electricals",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Action Construction Equipment",
+      "nse_symbol": null,
+      "sector": "Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Travel Food Services",
+      "nse_symbol": null,
+      "sector": "Consumer Services",
+      "enabled": true
+    },
+    {
+      "name": "Nippon Life India AMC",
+      "nse_symbol": null,
+      "sector": "Financial Services & Asset Management",
+      "enabled": true
+    },
+    {
+      "name": "Anthem Biosciences",
+      "nse_symbol": null,
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "Kanohar Electricals",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Waaree Renewable Technologies",
+      "nse_symbol": null,
+      "sector": "Renewable Energy",
+      "enabled": true
+    },
+    {
+      "name": "HBL Engineering",
+      "nse_symbol": null,
+      "sector": "Power, Electricals & Defence Electronics",
+      "enabled": true
+    },
+    {
+      "name": "Tips Music",
+      "nse_symbol": null,
+      "sector": "Media & Entertainment",
+      "enabled": true
+    },
+    {
+      "name": "SBI Funds Management",
+      "nse_symbol": null,
+      "sector": "Financial Services & Asset Management",
+      "enabled": true
+    },
+    {
+      "name": "Bharat Electronics",
+      "nse_symbol": null,
+      "sector": "Defence Electronics",
+      "enabled": true
+    },
+    {
+      "name": "RailTel Corporation",
+      "nse_symbol": null,
+      "sector": "Telecom & Infrastructure",
+      "enabled": true
+    },
+    {
+      "name": "BLS International",
+      "nse_symbol": null,
+      "sector": "Business Services",
+      "enabled": true
+    }
+  ]
+}
