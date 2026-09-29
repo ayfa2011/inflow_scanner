@@ -15,8 +15,7 @@ import yfinance as yf
 
 logger = logging.getLogger("inflow_scanner")
 WATCHLIST_PATH = Path(__file__).resolve().with_name("swing_watchlist.json")
-SL_PCT = 0.03
-TARGET_PCT = 0.045
+TARGET_PCT = 0.05
 
 
 def _now_ist():
@@ -205,6 +204,21 @@ def run_inflow_scanner(capital_per_trade=30000.0):
                 if qty >= 1:
                     invested = round(qty * price, 2)
                     info = ticker_info.get(ticker, {})
+                    # Transparent rule-fit score (0-100), not a probability of profit.
+                    ema_distance = min(abs(price - ema20) / ema20, abs(price - ema50) / ema50)
+                    proximity_score = max(0.0, 20.0 * (1.0 - ema_distance / 0.02))
+                    volume_ratio = vol / vol_avg if vol_avg > 0 else 0.0
+                    volume_score = min(15.0, max(0.0, volume_ratio * 10.0))
+                    trend_score = (10.0 if ema50 > ema200 else 0.0) + (5.0 if price > ema200 else 0.0)
+                    rsi_score = max(0.0, 10.0 * (1.0 - abs(rsi - 53.0) / 30.0))
+                    score = round(min(100.0, 50.0 + proximity_score + volume_score + trend_score + rsi_score), 1)
+                    reasons = [
+                        "Trend filter passed" if c1 else "Trend filter failed",
+                        "Price within 2% of EMA20/EMA50",
+                        "Bullish daily candle and above previous close",
+                        "RSI within 38–68",
+                        "Volume at/above 20-day average",
+                    ]
                     matches.append({
                         "stock": ticker.removesuffix(".NS"),
                         "companyName": info.get("name", ticker.removesuffix(".NS")),
@@ -212,17 +226,26 @@ def run_inflow_scanner(capital_per_trade=30000.0):
                         "buyPrice": round(price, 2),
                         "qty": qty,
                         "investment": invested,
-                        "stopLoss": round(price * (1 - SL_PCT), 2),
+                        "stopLoss": None,
                         "target": round(price * (1 + TARGET_PCT), 2),
+                        "targetPct": 5,
                         "rsi": round(rsi, 1),
-                        "maxRisk": round(invested * SL_PCT, 2),
-                        "targetProfit": round(invested * TARGET_PCT, 2)
+                        "maxRisk": None,
+                        "targetProfit": round(invested * TARGET_PCT, 2),
+                        "setupScore": score,
+                        "scoreMeaning": "Rule-fit score only; not a win probability or return forecast.",
+                        "setupReasons": reasons,
+                        "volumeRatio": round(volume_ratio, 2),
+                        "ema20DistancePct": round(abs(price - ema20) / ema20 * 100, 2),
+                        "ema50DistancePct": round(abs(price - ema50) / ema50 * 100, 2),
                     })
         except Exception as exc:
             diagnostics["tickersSkipped"] += 1
             if len(diagnostics["tickerErrors"]) < 30:
                 diagnostics["tickerErrors"].append({"ticker": ticker, "error": str(exc)[:200]})
             logger.exception("Error scanning ticker %s", ticker)
+
+    matches.sort(key=lambda item: item.get("setupScore", 0), reverse=True)
 
     return {
         "status": "success",
@@ -231,5 +254,7 @@ def run_inflow_scanner(capital_per_trade=30000.0):
         "data": matches,
         "diagnostics": diagnostics,
         "message": ("Scan completed using configured Swing Watchlist and daily market data." if matches else
-                   "No configured watchlist stocks matched all five conditions; see diagnostics for data/skipped counts.")
+                   "No configured watchlist stocks matched all five conditions; see diagnostics for data/skipped counts."),
+        "rankingNote": "Sorted by transparent rule-fit score; score is not a probability of profit.",
+        "exitPlan": "Illustrative full-exit target is +5% from scan reference price. No fixed stop-loss is provided."
     }
