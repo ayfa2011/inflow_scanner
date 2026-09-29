@@ -123,7 +123,7 @@ def run_inflow_scanner(capital_per_trade=30000.0):
             "stock": item["symbol"], "companyName": item["name"], "sector": item.get("sector", ""),
             "buyPrice": None, "qty": 0, "investment": 0, "stopLoss": None, "target": None,
             "targetPct": 5, "rsi": None, "maxRisk": None, "targetProfit": 0,
-            "setupScore": 0, "matched": False, "status": "Waiting for market data",
+            "setupScore": 0, "conditionPoints": 0, "conditions": [], "matched": False, "status": "Waiting for market data",
             "setupReasons": [], "volumeRatio": None, "ema20DistancePct": None, "ema50DistancePct": None
         })
 
@@ -195,20 +195,29 @@ def run_inflow_scanner(capital_per_trade=30000.0):
             trend_score = (10.0 if ema50 > ema200 else 0.0) + (5.0 if price > ema200 else 0.0)
             rsi_score = max(0.0, 10.0*(1.0-abs(rsi-53.0)/30.0))
             score = round(min(100.0, 50.0 + proximity_score + volume_score + trend_score + rsi_score), 1)
-            matched = bool(c1 and c2 and c3 and c4 and c5)
+            condition_defs = [
+                (c1, "Trend: Price > EMA200 OR EMA50 > EMA200"),
+                (c2, "Price within 2% of EMA20 or EMA50"),
+                (c3, "Bullish candle: Close > Open and previous Close"),
+                (c4, "RSI between 38 and 68"),
+                (c5, "Volume >= 20-day average"),
+            ]
+            conditions = [{"point": i + 1, "label": label, "pass": bool(ok)} for i, (ok, label) in enumerate(condition_defs)]
+            condition_points = sum(1 for ok, _ in condition_defs if ok)
+            matched = condition_points == 5
             qty = int(capital // price)
             invested = round(qty*price, 2) if qty else 0
             row.update({
                 "buyPrice": round(price,2), "qty": qty, "investment": invested,
                 "target": round(price*(1+TARGET_PCT),2), "targetProfit": round(invested*TARGET_PCT,2),
-                "rsi": round(rsi,1), "setupScore": score, "matched": matched,
+                "rsi": round(rsi,1), "setupScore": score, "conditionPoints": condition_points,
+                "conditions": conditions, "matched": matched,
                 "status": "MATCH" if matched else "Watchlist · setup not complete",
                 "volumeRatio": round(volume_ratio,2),
                 "ema20DistancePct": round(abs(price-ema20)/ema20*100,2),
                 "ema50DistancePct": round(abs(price-ema50)/ema50*100,2),
-                "setupReasons": [label for ok,label in [
-                    (c1,"Trend filter passed"),(c2,"Near EMA20/EMA50"),(c3,"Bullish candle and above previous close"),
-                    (c4,"RSI within 38–68"),(c5,"Volume at/above 20-day average")] if ok]
+                "setupReasons": [label for ok,label in condition_defs if ok],
+                "failedConditions": [label for ok,label in condition_defs if not ok]
             })
             if matched and qty > 0:
                 matches.append(row)
