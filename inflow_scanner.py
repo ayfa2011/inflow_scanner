@@ -73,6 +73,63 @@ def calculate_rsi(series, period=14):
     return result.mask((avg_loss == 0) & (avg_gain == 0), 50)
 
 
+def calculate_atr(df, period=14):
+    high = pd.to_numeric(df["High"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+
+def calculate_adx(df, period=14):
+    high = pd.to_numeric(df["High"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+    prev_close = close.shift(1)
+    tr = pd.concat([(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean() / atr
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False, min_periods=period).mean() / atr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, float("nan"))
+    return dx.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+
+def calculate_supertrend(df, period=10, multiplier=3.0):
+    high = pd.to_numeric(df["High"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    atr = calculate_atr(df, period)
+    hl2 = (high + low) / 2
+    upper = hl2 + multiplier * atr
+    lower = hl2 - multiplier * atr
+    final_upper = upper.copy()
+    final_lower = lower.copy()
+    st = pd.Series(index=df.index, dtype="float64")
+    bullish = pd.Series(index=df.index, dtype="bool")
+    for i in range(len(df)):
+        if pd.isna(atr.iloc[i]):
+            continue
+        if i == 0 or pd.isna(st.iloc[i - 1]):
+            bullish.iloc[i] = True
+            st.iloc[i] = final_lower.iloc[i]
+            continue
+        prev_close = close.iloc[i - 1]
+        final_upper.iloc[i] = (upper.iloc[i] if upper.iloc[i] < final_upper.iloc[i - 1] or prev_close > final_upper.iloc[i - 1] else final_upper.iloc[i - 1])
+        final_lower.iloc[i] = (lower.iloc[i] if lower.iloc[i] > final_lower.iloc[i - 1] or prev_close < final_lower.iloc[i - 1] else final_lower.iloc[i - 1])
+        prev_bull = bool(bullish.iloc[i - 1])
+        if prev_bull:
+            bullish.iloc[i] = not (close.iloc[i] < final_lower.iloc[i])
+        else:
+            bullish.iloc[i] = close.iloc[i] > final_upper.iloc[i]
+        st.iloc[i] = final_lower.iloc[i] if bullish.iloc[i] else final_upper.iloc[i]
+    return st, bullish
+
+
 def _ticker_frame(data, ticker):
     """Extract ticker OHLCV regardless of yfinance MultiIndex orientation."""
     if data is None or data.empty:
@@ -93,75 +150,87 @@ def _ticker_frame(data, ticker):
 
 
 def run_inflow_scanner(capital_per_trade=30000.0):
-    """Scan configured watchlist and return every enabled stock, ranked by rule-fit."""
+    """Scan daily candles against the five original conditions plus Supertrend and ADX."""
     try:
         capital = float(capital_per_trade)
         if not math.isfinite(capital) or capital <= 0:
             raise ValueError()
     except (TypeError, ValueError):
-        return {"status": "error", "message": "Capital must be a positive number.", "data": [], "watchlist": []}
+        return {"status": "error", "message": "Capital must be a positive number.", "data": []}
 
     try:
         watchlist, unconfigured = load_swing_watchlist()
     except Exception as exc:
         logger.exception("Swing watchlist could not be loaded")
         return {"status": "error", "message": "Could not load swing_watchlist.json: " + str(exc)[:200],
-                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "watchlist": []}
+                "scanTime": _now_ist(), "totalMatches": 0, "data": []}
 
+    tickers = [item["ticker"] for item in watchlist]
+    ticker_info = {item["ticker"]: item for item in watchlist}
     diagnostics = {
-        "tickerSource": "swing_watchlist.json", "watchlistEnabled": len(watchlist) + len(unconfigured),
-        "tickersRequested": len(watchlist), "unconfiguredStocks": unconfigured,
-        "tickersWithData": 0, "tickersInsufficientHistory": 0, "tickersSkipped": 0,
-        "tickerErrors": [], "dataInterval": "1d",
-        "rules": ["Close > EMA200 OR EMA50 > EMA200", "Close within 2% of EMA20 OR EMA50",
-                  "Close > Open AND Close > previous Close", "RSI(14) between 38 and 68",
-                  "Volume >= 20-day average volume"]
+        "tickerSource": "swing_watchlist.json",
+        "watchlistEnabled": len(watchlist) + len(unconfigured),
+        "tickersRequested": len(tickers),
+        "unconfiguredStocks": unconfigured,
+        "tickersWithData": 0,
+        "tickersInsufficientHistory": 0,
+        "tickersSkipped": 0,
+        "tickerErrors": [],
+        "dataInterval": "1d",
+        "rules": [
+            "Close > EMA200 OR EMA50 > EMA200",
+            "Close within 2% of EMA20 OR EMA50",
+            "Close > Open AND Close > previous Close",
+            "RSI(14) between 38 and 68",
+            "Volume >= 20-day average volume",
+            "Supertrend(10,3) bullish (Close above Supertrend line)",
+            "ADX(14) > 25"
+        ]
     }
-    all_rows = []
-    for item in watchlist:
-        all_rows.append({
-            "stock": item["symbol"], "companyName": item["name"], "sector": item.get("sector", ""),
-            "buyPrice": None, "qty": 0, "investment": 0, "stopLoss": None, "target": None,
-            "targetPct": 5, "rsi": None, "maxRisk": None, "targetProfit": 0,
-            "setupScore": 0, "conditionPoints": 0, "conditions": [], "matched": False, "status": "Waiting for market data",
-            "setupReasons": [], "volumeRatio": None, "ema20DistancePct": None, "ema50DistancePct": None
-        })
 
-    if not watchlist:
-        return {"status": "error", "message": "No enabled stocks have a configured nse_symbol in swing_watchlist.json.",
-                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "watchlist": all_rows, "diagnostics": diagnostics}
+    if not tickers:
+        return {"status": "error",
+                "message": "No enabled stocks have a configured nse_symbol in swing_watchlist.json. Add verified symbols to scan.",
+                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "diagnostics": diagnostics}
 
     try:
-        data = yf.download(tickers=[x["ticker"] for x in watchlist], period="1y", interval="1d",
-                           group_by="ticker", auto_adjust=False, progress=False, threads=True, timeout=25)
+        data = yf.download(
+            tickers=tickers, period="1y", interval="1d",
+            group_by="ticker", auto_adjust=False,
+            progress=False, threads=True, timeout=25
+        )
     except Exception as exc:
         logger.exception("yfinance download failed")
-        for row in all_rows: row["status"] = "Market data unavailable"
-        return {"status": "success", "message": "Market data download failed; watchlist shown without prices.",
-                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "watchlist": all_rows, "diagnostics": diagnostics}
+        return {"status": "error", "message": "Market data download failed: " + str(exc)[:250],
+                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "diagnostics": diagnostics}
 
     if data is None or data.empty:
-        for row in all_rows: row["status"] = "Market data unavailable"
-        return {"status": "success", "message": "Market data provider returned no data; watchlist shown without prices.",
-                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "watchlist": all_rows, "diagnostics": diagnostics}
+        return {"status": "error",
+                "message": "Market data provider returned no data. Check Render logs/network.",
+                "scanTime": _now_ist(), "totalMatches": 0, "data": [], "diagnostics": diagnostics}
 
     matches = []
-    for row, info in zip(all_rows, watchlist):
-        ticker = info["ticker"]
+    for ticker in tickers:
         try:
             df = _ticker_frame(data, ticker)
-            if df.empty or not {"Open", "Close", "Volume"}.issubset(df.columns):
+            if df.empty:
                 diagnostics["tickersSkipped"] += 1
-                row["status"] = "Data unavailable"
                 continue
+            required = {"Open", "High", "Low", "Close", "Volume"}
+            if not required.issubset(df.columns):
+                diagnostics["tickersSkipped"] += 1
+                if len(diagnostics["tickerErrors"]) < 30:
+                    diagnostics["tickerErrors"].append(
+                        {"ticker": ticker, "error": "Missing OHLCV columns"}
+                    )
+                continue
+
             df = df.dropna(subset=["Open", "Close", "Volume"]).copy()
             if len(df) < 200:
                 diagnostics["tickersInsufficientHistory"] += 1
-                row["status"] = "Insufficient history"
-                if len(df):
-                    row["buyPrice"] = round(float(df["Close"].iloc[-1]), 2)
                 continue
             diagnostics["tickersWithData"] += 1
+
             close = pd.to_numeric(df["Close"], errors="coerce")
             volume = pd.to_numeric(df["Volume"], errors="coerce")
             df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
@@ -169,73 +238,93 @@ def run_inflow_scanner(capital_per_trade=30000.0):
             df["EMA_200"] = close.ewm(span=200, adjust=False).mean()
             df["RSI_14"] = calculate_rsi(close, 14)
             df["Vol_SMA20"] = volume.rolling(20, min_periods=20).mean()
+            df["ADX_14"] = calculate_adx(df, 14)
+            df["Supertrend_10_3"], df["Supertrend_Bullish"] = calculate_supertrend(df, 10, 3.0)
+
             curr, prev = df.iloc[-1], df.iloc[-2]
-            keys = ["Close", "Open", "EMA_20", "EMA_50", "EMA_200", "RSI_14", "Volume", "Vol_SMA20"]
+            keys = ["Close", "Open", "EMA_20", "EMA_50", "EMA_200", "RSI_14", "Volume", "Vol_SMA20", "ADX_14", "Supertrend_10_3"]
             if any(pd.isna(curr[k]) for k in keys) or pd.isna(prev["Close"]):
                 diagnostics["tickersSkipped"] += 1
-                row["status"] = "Indicators unavailable"
                 continue
+
             price = float(curr["Close"])
             ema20, ema50, ema200 = float(curr["EMA_20"]), float(curr["EMA_50"]), float(curr["EMA_200"])
             rsi, vol, vol_avg = float(curr["RSI_14"]), float(curr["Volume"]), float(curr["Vol_SMA20"])
             if price <= 0 or ema20 <= 0 or ema50 <= 0:
                 diagnostics["tickersSkipped"] += 1
-                row["status"] = "Invalid market data"
                 continue
 
             c1 = price > ema200 or ema50 > ema200
-            c2 = abs(price-ema20)/ema20 <= .02 or abs(price-ema50)/ema50 <= .02
+            c2 = abs(price - ema20) / ema20 <= 0.02 or abs(price - ema50) / ema50 <= 0.02
             c3 = price > float(curr["Open"]) and price > float(prev["Close"])
             c4 = 38 <= rsi <= 68
             c5 = vol >= vol_avg
-            ema_distance = min(abs(price-ema20)/ema20, abs(price-ema50)/ema50)
-            proximity_score = max(0.0, 20.0*(1.0-ema_distance/.02))
-            volume_ratio = vol/vol_avg if vol_avg > 0 else 0.0
-            volume_score = min(15.0, max(0.0, volume_ratio*10.0))
-            trend_score = (10.0 if ema50 > ema200 else 0.0) + (5.0 if price > ema200 else 0.0)
-            rsi_score = max(0.0, 10.0*(1.0-abs(rsi-53.0)/30.0))
-            score = round(min(100.0, 50.0 + proximity_score + volume_score + trend_score + rsi_score), 1)
-            condition_defs = [
-                (c1, "Trend: Price > EMA200 OR EMA50 > EMA200"),
-                (c2, "Price within 2% of EMA20 or EMA50"),
-                (c3, "Bullish candle: Close > Open and previous Close"),
-                (c4, "RSI between 38 and 68"),
-                (c5, "Volume >= 20-day average"),
-            ]
-            conditions = [{"point": i + 1, "label": label, "pass": bool(ok)} for i, (ok, label) in enumerate(condition_defs)]
-            condition_points = sum(1 for ok, _ in condition_defs if ok)
-            matched = condition_points == 5
-            qty = int(capital // price)
-            invested = round(qty*price, 2) if qty else 0
-            row.update({
-                "buyPrice": round(price,2), "qty": qty, "investment": invested,
-                "target": round(price*(1+TARGET_PCT),2), "targetProfit": round(invested*TARGET_PCT,2),
-                "rsi": round(rsi,1), "setupScore": score, "conditionPoints": condition_points,
-                "conditions": conditions, "matched": matched,
-                "status": "MATCH" if matched else "Watchlist · setup not complete",
-                "volumeRatio": round(volume_ratio,2),
-                "ema20DistancePct": round(abs(price-ema20)/ema20*100,2),
-                "ema50DistancePct": round(abs(price-ema50)/ema50*100,2),
-                "setupReasons": [label for ok,label in condition_defs if ok],
-                "failedConditions": [label for ok,label in condition_defs if not ok]
-            })
-            if matched and qty > 0:
-                matches.append(row)
-            elif matched:
-                row["status"] = "Match · capital too low for 1 share"
+            adx = float(curr["ADX_14"])
+            supertrend_line = float(curr["Supertrend_10_3"])
+            c6 = bool(curr["Supertrend_Bullish"]) and price > supertrend_line
+            c7 = adx > 25
+
+            if c1 and c2 and c3 and c4 and c5 and c6 and c7:
+                qty = int(capital // price)
+                if qty >= 1:
+                    invested = round(qty * price, 2)
+                    info = ticker_info.get(ticker, {})
+                    # Transparent rule-fit score (0-100), not a probability of profit.
+                    ema_distance = min(abs(price - ema20) / ema20, abs(price - ema50) / ema50)
+                    proximity_score = max(0.0, 20.0 * (1.0 - ema_distance / 0.02))
+                    volume_ratio = vol / vol_avg if vol_avg > 0 else 0.0
+                    volume_score = min(15.0, max(0.0, volume_ratio * 10.0))
+                    trend_score = (10.0 if ema50 > ema200 else 0.0) + (5.0 if price > ema200 else 0.0)
+                    rsi_score = max(0.0, 10.0 * (1.0 - abs(rsi - 53.0) / 30.0))
+                    score = round(min(100.0, 50.0 + proximity_score + volume_score + trend_score + rsi_score), 1)
+                    reasons = [
+                        "Trend filter passed" if c1 else "Trend filter failed",
+                        "Price within 2% of EMA20/EMA50",
+                        "Bullish daily candle and above previous close",
+                        "RSI within 38–68",
+                        "Volume at/above 20-day average",
+                        "Supertrend(10,3) bullish; close above line",
+                        "ADX(14) > 25",
+                    ]
+                    matches.append({
+                        "stock": ticker.removesuffix(".NS"),
+                        "companyName": info.get("name", ticker.removesuffix(".NS")),
+                        "sector": info.get("sector", ""),
+                        "buyPrice": round(price, 2),
+                        "qty": qty,
+                        "investment": invested,
+                        "stopLoss": None,
+                        "target": round(price * (1 + TARGET_PCT), 2),
+                        "targetPct": 5,
+                        "rsi": round(rsi, 1),
+                        "supertrend": round(supertrend_line, 2),
+                        "adx": round(adx, 2),
+                        "conditionsPassed": 7,
+                        "maxRisk": None,
+                        "targetProfit": round(invested * TARGET_PCT, 2),
+                        "setupScore": score,
+                        "scoreMeaning": "Rule-fit score only; not a win probability or return forecast.",
+                        "setupReasons": reasons,
+                        "volumeRatio": round(volume_ratio, 2),
+                        "ema20DistancePct": round(abs(price - ema20) / ema20 * 100, 2),
+                        "ema50DistancePct": round(abs(price - ema50) / ema50 * 100, 2),
+                    })
         except Exception as exc:
             diagnostics["tickersSkipped"] += 1
-            row["status"] = "Scan error"
             if len(diagnostics["tickerErrors"]) < 30:
                 diagnostics["tickerErrors"].append({"ticker": ticker, "error": str(exc)[:200]})
             logger.exception("Error scanning ticker %s", ticker)
 
-    all_rows.sort(key=lambda x: (x.get("setupScore", 0), bool(x.get("matched"))), reverse=True)
-    matches.sort(key=lambda x: x.get("setupScore", 0), reverse=True)
+    matches.sort(key=lambda item: item.get("setupScore", 0), reverse=True)
+
     return {
-        "status": "success", "scanTime": _now_ist(), "totalMatches": len(matches),
-        "data": matches, "watchlist": all_rows, "diagnostics": diagnostics,
-        "message": "Full configured watchlist returned; matching setups are marked MATCH.",
+        "status": "success",
+        "scanTime": _now_ist(),
+        "totalMatches": len(matches),
+        "data": matches,
+        "diagnostics": diagnostics,
+        "message": ("Scan completed using configured Swing Watchlist and daily market data." if matches else
+                   "No configured watchlist stocks matched all seven conditions; see diagnostics for data/skipped counts."),
         "rankingNote": "Sorted by transparent rule-fit score; score is not a probability of profit.",
-        "exitPlan": "Illustrative full-exit target +5% from scan reference price. No fixed per-stock stop-loss. Portfolio drawdown of -15% is a review threshold, not an automatic stop."
+        "exitPlan": "Existing exit behavior unchanged; no stop-loss or trailing-stop management is included in this scanner."
     }
