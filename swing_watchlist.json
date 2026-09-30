@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "description": "Swing Pick curated watchlist. NSE symbols populated as candidate exchange symbols; validate live Yahoo Finance data and resolve any ticker errors before relying on scan results.",
+  "description": "Swing Pick curated watchlist with updated exchange symbols.",
   "stocks": [
     {
       "name": "Hitachi Energy",
@@ -144,6 +144,126 @@
       "name": "BLS International",
       "nse_symbol": "BLS",
       "sector": "Business Services",
+      "enabled": true
+    },
+    {
+      "name": "Apollo Hospitals Enterprise",
+      "nse_symbol": "APOLLOHOSP",
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "RR Kabel",
+      "nse_symbol": "RRKABEL",
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Tata Capital",
+      "nse_symbol": "TATACAP",
+      "sector": "Financial Services & Asset Management",
+      "enabled": true
+    },
+    {
+      "name": "Kama Holdings",
+      "nse_symbol": "KAMAHOLD",
+      "sector": "Industrial Materials",
+      "enabled": true
+    },
+    {
+      "name": "Berger Paints India",
+      "nse_symbol": "BERGEPAINT",
+      "sector": "Consumer Durables",
+      "enabled": true
+    },
+    {
+      "name": "DDev Plastiks Industries",
+      "nse_symbol": "DDEVPLSTIK",
+      "sector": "Industrial Materials",
+      "enabled": true
+    },
+    {
+      "name": "Khazanchi Jewellers",
+      "nse_symbol": "KHAZANCHI",
+      "sector": "Consumer Durables",
+      "enabled": true
+    },
+    {
+      "name": "Hindustan Aeronautics",
+      "nse_symbol": "HAL",
+      "sector": "Defence Electronics",
+      "enabled": true
+    },
+    {
+      "name": "Divi's Laboratories",
+      "nse_symbol": "DIVISLAB",
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "Central Depository Services India",
+      "nse_symbol": "CDSL",
+      "sector": "Financial Services & Asset Management",
+      "enabled": true
+    },
+    {
+      "name": "Finolex Cables",
+      "nse_symbol": "FINCABLES",
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Force Motors",
+      "nse_symbol": "FORCEMOT",
+      "sector": "Automobile Components",
+      "enabled": true
+    },
+    {
+      "name": "CG Power and Industrial Solutions",
+      "nse_symbol": "CGPOWER",
+      "sector": "Power, Electricals & Capital Goods",
+      "enabled": true
+    },
+    {
+      "name": "Premier Energies",
+      "nse_symbol": "PREMIERENE",
+      "sector": "Renewable Energy",
+      "enabled": true
+    },
+    {
+      "name": "Jyoti Resins & Adhesives",
+      "nse_symbol": "JYOTIRESIN",
+      "sector": "Industrial Materials",
+      "enabled": true
+    },
+    {
+      "name": "Arrow Greentech",
+      "nse_symbol": "ARROWGREEN",
+      "sector": "Industrial Materials",
+      "enabled": true
+    },
+    {
+      "name": "Natco Pharma",
+      "nse_symbol": "NATCOPHARM",
+      "sector": "Pharmaceuticals & Healthcare",
+      "enabled": true
+    },
+    {
+      "name": "National Aluminium Company",
+      "nse_symbol": "NATIONALUM",
+      "sector": "Metals & Mining",
+      "enabled": true
+    },
+    {
+      "name": "Gujarat Pipavav Port",
+      "nse_symbol": "GPPL",
+      "sector": "Telecom & Infrastructure",
+      "enabled": true
+    },
+    {
+      "name": "Ajax Engineering",
+      "nse_symbol": "AJAX",
+      "sector": "Capital Goods",
       "enabled": true
     }
   ]
