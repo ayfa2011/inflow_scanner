@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from inflow_scanner import run_inflow_scanner
@@ -18,9 +19,13 @@ def home():
     return {"status": "online", "message": "Inflow Scanner Live API is Running!"}
 
 @app.get("/api/scan")
-def get_scan_results(capital: float = Query(default=30000.0, gt=0, le=100000000)):
-    results = run_inflow_scanner(capital_per_trade=capital)
-    return results
+def get_scan_results(
+    capital: float = Query(default=30000.0, gt=0, le=100000000),
+    mode: str = Query(default="watchlist", pattern="^(watchlist|nifty100|custom)$"),
+    symbols: Optional[str] = Query(default=None, max_length=400),
+):
+    # mode = watchlist | nifty100 | custom (symbols="TCS,RELIANCE")
+    return run_inflow_scanner(capital_per_trade=capital, mode=mode, symbols=symbols)
 
 if __name__ == "__main__":
     import uvicorn

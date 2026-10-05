@@ -3,7 +3,7 @@ Daily OHLCV from yfinance; not guaranteed real-time. Stateless scanner only retu
 initial ATR stop reference. A live trailing stop must be ratcheted per open position.
 """
 import datetime as dt
-import json, logging, math
+import csv, io, json, logging, math, re, time, urllib.request
 from pathlib import Path
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -40,6 +40,82 @@ def load_swing_watchlist(path=None):
         seen.add(ticker)
         configured.append({"name": name, "sector": item.get("sector", ""), "symbol": symbol.removesuffix(".NS"), "ticker": ticker})
     return configured, unconfigured
+
+
+# ---------------------------------------------------------------- stock universes
+NIFTY100_CSV_URL = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
+NIFTY100_CACHE_SECONDS = 24 * 3600
+_nifty100_cache = {"time": 0.0, "stocks": []}
+MAX_CUSTOM_SYMBOLS = 20
+_SYMBOL_RE = re.compile(r"^[A-Z0-9&\-]{1,20}$")
+
+# Fallback only (used if NSE's live constituent list can't be downloaded).
+# Index membership changes twice a year, so the live list is always tried first.
+NIFTY100_FALLBACK = (
+    "ADANIENT ADANIPORTS APOLLOHOSP ASIANPAINT AXISBANK BAJAJ-AUTO BAJFINANCE BAJAJFINSV BEL BHARTIARTL "
+    "CIPLA COALINDIA DRREDDY EICHERMOT ETERNAL GRASIM HCLTECH HDFCBANK HDFCLIFE HINDALCO HINDUNILVR "
+    "ICICIBANK INDIGO INFY ITC JIOFIN JSWSTEEL KOTAKBANK LT M&M MARUTI NESTLEIND NTPC ONGC POWERGRID "
+    "RELIANCE SBILIFE SBIN SHRIRAMFIN SUNPHARMA TATACONSUM TATASTEEL TCS TECHM TITAN TRENT ULTRACEMCO WIPRO "
+    "ABB ADANIENSOL ADANIGREEN ADANIPOWER AMBUJACEM BAJAJHLDNG BANKBARODA BOSCHLTD BPCL BRITANNIA CANBK "
+    "CGPOWER CHOLAFIN DABUR DIVISLAB DLF DMART GAIL GODREJCP HAL HAVELLS HINDZINC ICICIGI INDHOTEL IOC IRFC "
+    "JINDALSTEL JSWENERGY LICI LODHA LTIM MAZDOCK MUTHOOTFIN NAUKRI PFC PIDILITIND PNB RECLTD SHREECEM "
+    "SIEMENS SOLARINDS TATAPOWER TORNTPHARM TVSMOTOR UNITDSPR VBL VEDL ZYDUSLIF"
+).split()
+
+
+def _make_stock(name, symbol, sector=""):
+    symbol = str(symbol).strip().upper().removesuffix(".NS")
+    return {"name": name or symbol, "sector": sector, "symbol": symbol, "ticker": symbol + ".NS"}
+
+
+def load_nifty100():
+    """Nifty 100 constituents: live NSE csv (cached 24h) -> fallback list."""
+    now = time.time()
+    if _nifty100_cache["stocks"] and now - _nifty100_cache["time"] < NIFTY100_CACHE_SECONDS:
+        return _nifty100_cache["stocks"], _nifty100_cache.get("source", "cache")
+    try:
+        req = urllib.request.Request(NIFTY100_CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            text = r.read().decode("utf-8-sig")
+        stocks = []
+        for row in csv.DictReader(io.StringIO(text)):
+            sym = (row.get("Symbol") or "").strip()
+            if sym:
+                stocks.append(_make_stock((row.get("Company Name") or "").strip(), sym, (row.get("Industry") or "").strip()))
+        if len(stocks) >= 90:
+            _nifty100_cache.update({"time": now, "stocks": stocks, "source": "NSE live list"})
+            return stocks, "NSE live list"
+    except Exception:
+        logger.exception("Could not download Nifty 100 list; using fallback")
+    stocks = [_make_stock(sym, sym) for sym in NIFTY100_FALLBACK]
+    return stocks, "built-in fallback list"
+
+
+def parse_custom_symbols(raw):
+    """'tcs, reliance.ns  m&m' -> ([stocks], [invalid strings])"""
+    parts = re.split(r"[,\s;]+", str(raw or "").strip().upper())
+    stocks, invalid, seen = [], [], set()
+    for part in parts:
+        if not part: continue
+        sym = part.removesuffix(".NS")
+        if not _SYMBOL_RE.match(sym):
+            invalid.append(part); continue
+        if sym in seen: continue
+        seen.add(sym)
+        stocks.append(_make_stock(sym, sym))
+    return stocks[:MAX_CUSTOM_SYMBOLS], invalid, len(stocks) > MAX_CUSTOM_SYMBOLS
+
+
+def _name_lookup():
+    """Symbol -> (company name, sector) from the watchlist + Nifty 100, so custom search shows nice names."""
+    out = {}
+    try:
+        for x in load_swing_watchlist()[0]: out[x["symbol"]] = (x["name"], x["sector"])
+    except Exception: pass
+    try:
+        for x in _nifty100_cache["stocks"]: out.setdefault(x["symbol"], (x["name"], x["sector"]))
+    except Exception: pass
+    return out
 
 
 def _ticker_frame(data, ticker):
@@ -112,19 +188,34 @@ def _rsi(series, period=14):
     return out.mask((al==0)&(ag>0),100).mask((al==0)&(ag==0),50)
 
 
-def run_inflow_scanner(capital_per_trade=30000.0):
+def run_inflow_scanner(capital_per_trade=30000.0, mode="watchlist", symbols=None):
     try:
         capital=float(capital_per_trade)
         if not math.isfinite(capital) or capital<=0: raise ValueError
     except (TypeError, ValueError):
         return {"status":"error","message":"Capital must be a positive number.","data":[],"watchlist":[]}
-    try:
-        watchlist, unconfigured=load_swing_watchlist()
-    except Exception as exc:
-        logger.exception("Could not load watchlist")
-        return {"status":"error","message":"Could not load swing_watchlist.json: "+str(exc)[:200],"scanTime":_now_ist(),"totalMatches":0,"data":[],"watchlist":[]}
+    mode=(mode or "watchlist").strip().lower()
+    unconfigured=[]; source_label="swing_watchlist.json"
+    if mode=="nifty100":
+        watchlist, src = load_nifty100(); source_label="Nifty 100 ("+src+")"
+    elif mode=="custom":
+        watchlist, invalid, truncated = parse_custom_symbols(symbols)
+        if invalid: unconfigured=[{"name":x,"reason":"Invalid symbol format"} for x in invalid]
+        if not watchlist:
+            return {"status":"error","message":"Enter at least one valid NSE symbol, e.g. TCS or RELIANCE.","scanTime":_now_ist(),"totalMatches":0,"data":[],"watchlist":[],"mode":mode}
+        known=_name_lookup()
+        for x in watchlist:
+            if x["symbol"] in known: x["name"], x["sector"] = known[x["symbol"]]
+        source_label="Custom search"+(" (first "+str(MAX_CUSTOM_SYMBOLS)+" symbols only)" if truncated else "")
+    else:
+        mode="watchlist"
+        try:
+            watchlist, unconfigured=load_swing_watchlist()
+        except Exception as exc:
+            logger.exception("Could not load watchlist")
+            return {"status":"error","message":"Could not load swing_watchlist.json: "+str(exc)[:200],"scanTime":_now_ist(),"totalMatches":0,"data":[],"watchlist":[],"mode":mode}
     tickers=[x["ticker"] for x in watchlist]; info={x["ticker"]:x for x in watchlist}
-    diag={"tickerSource":"swing_watchlist.json","watchlistEnabled":len(watchlist)+len(unconfigured),"tickersRequested":len(tickers),"unconfiguredStocks":unconfigured,"tickersWithData":0,"tickersInsufficientHistory":0,"tickersSkipped":0,"tickerErrors":[],"dataInterval":"1d","strategy":"Original five conditions + Supertrend(10,3) bullish + ADX(14)>=25"}
+    diag={"mode":mode,"tickerSource":source_label,"watchlistEnabled":len(watchlist)+len(unconfigured),"tickersRequested":len(tickers),"unconfiguredStocks":unconfigured,"tickersWithData":0,"tickersInsufficientHistory":0,"tickersSkipped":0,"tickerErrors":[],"dataInterval":"1d","strategy":"Original five conditions + Supertrend(10,3) bullish + ADX(14)>=25"}
     labels=["Original trend: Close > EMA200 OR EMA50 > EMA200","Price within 2% of EMA20 or EMA50","Bullish candle and above previous close","RSI(14) between 38 and 68","Volume >= 20-day average","Supertrend(10,3) bullish","ADX(14) >= 25"]
     def pending_row(item, reason):
         return {"stock":item["symbol"],"companyName":item.get("name",item["symbol"]),"sector":item.get("sector",""),"matched":False,"status":"Pending — "+reason,"dataStatus":reason,"conditions":[{"label":lab,"pass":False} for lab in labels],"conditionPoints":0,"conditionTotal":7,"buyPrice":None,"qty":None,"investment":None,"target":None,"targetPct":5,"targetProfit":None,"rsi":None,"supertrend":None,"supertrendBullish":None,"adx":None,"atr10":None,"initialAtrStop":None,"setupScore":0,"scoreMeaning":"Rule checks passed (0-7), not a win probability or return forecast."}
@@ -147,7 +238,7 @@ def run_inflow_scanner(capital_per_trade=30000.0):
         try:
             df=_ticker_frame(raw,ticker)
             if df.empty or not all(col in df.columns for col in ["Open","High","Low","Close","Volume"]):
-                diag["tickersSkipped"]+=1; row["status"]="Pending — no market data"; row["dataStatus"]="No OHLCV data returned for symbol"; continue
+                diag["tickersSkipped"]+=1; row["status"]="Pending — symbol not found" if mode=="custom" else "Pending — no market data"; row["dataStatus"]="No data for this symbol — check the NSE symbol spelling" if mode=="custom" else "No OHLCV data returned for symbol"; continue
             df=df.dropna(subset=["Open","High","Low","Close","Volume"]).copy()
             if len(df)<220:
                 diag["tickersInsufficientHistory"]+=1; row["status"]="Pending — insufficient history"; row["dataStatus"]="Need at least 220 daily OHLCV rows; received "+str(len(df)); continue
@@ -170,4 +261,4 @@ def run_inflow_scanner(capital_per_trade=30000.0):
             logger.exception("Ticker scan error: %s",ticker)
     all_rows.sort(key=lambda x:(x["conditionPoints"],x.get("adx") or 0),reverse=True)
     matches.sort(key=lambda x:(x["conditionPoints"],x.get("adx") or 0),reverse=True)
-    return {"status":"success","scanTime":_now_ist(),"totalMatches":len(matches),"data":all_rows,"watchlist":all_rows,"matches":matches,"diagnostics":diag,"message":"Every enabled configured stock is listed; missing data is marked Pending. Setups require all 7 checks.","rankingNote":"Sorted by checks passed then ADX; this is not a profit probability ranking.","strategy":{"supertrendPeriod":10,"supertrendMultiplier":3,"adxPeriod":14,"adxMinimum":25,"atrPeriod":10,"atrTrailMultiplier":3,"targetPct":5}}
+    return {"status":"success","scanTime":_now_ist(),"totalMatches":len(matches),"data":all_rows,"watchlist":all_rows,"matches":matches,"diagnostics":diag,"mode":mode,"message":"Every enabled configured stock is listed; missing data is marked Pending. Setups require all 7 checks.","rankingNote":"Sorted by checks passed then ADX; this is not a profit probability ranking.","strategy":{"supertrendPeriod":10,"supertrendMultiplier":3,"adxPeriod":14,"adxMinimum":25,"atrPeriod":10,"atrTrailMultiplier":3,"targetPct":5}}
