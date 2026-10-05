@@ -3,12 +3,6 @@
   "description": "Swing Pick curated watchlist with updated exchange symbols.",
   "stocks": [
     {
-      "name": "Hitachi Energy",
-      "nse_symbol": "POWERINDIA",
-      "sector": "Power, Electricals & Capital Goods",
-      "enabled": true
-    },
-    {
       "name": "Polycab India",
       "nse_symbol": "POLYCAB",
       "sector": "Power, Electricals & Capital Goods",
